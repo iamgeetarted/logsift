@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logsift"
+version = "1.0.0"
+description = "Async log analyzer with AI-powered insights and semantic grouping"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "iamgeetarted", email = "marktimothydorsey@gmail.com"}]
+keywords = ["logs", "analysis", "ai", "cli", "async", "devops", "debugging"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: System :: Logging",
+    "Topic :: Utilities",
+    "Environment :: Console",
+]
+dependencies = [
+    "rich>=12.0",
+    "httpx>=0.25.0",
+    "numpy>=1.24.0",
+    "anthropic>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+logsift = "logsift.cli:entry_point"
+
+[project.urls]
+Homepage = "https://github.com/iamgeetarted/logsift"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
