@@ -4,6 +4,46 @@
 
 `logsift` reads log files (local or remote), clusters similar lines using vector similarity, and streams an AI-generated diagnosis of what went wrong — all in a live Rich terminal display.
 
+## What's New in v1.2.0
+
+### `--watch` mode — continuous re-analysis
+Tail any log file in watch mode: logsift re-analyzes it every N seconds in-place, giving you a live updating view of an evolving log.
+
+```bash
+# Re-analyze app.log every 10 seconds
+logsift app.log --watch 10
+```
+
+### Markdown export (`--format markdown`)
+Generate a shareable Markdown report — perfect for pasting into GitHub Issues, Confluence, or Slack code blocks. Includes level-breakdown table, top pattern table, and AI diagnosis.
+
+```bash
+logsift app.log --format markdown > report.md
+logsift app.log --format markdown --no-ai >> INCIDENT.md
+```
+
+### CSV export (`--format csv`)
+Dump every group as a CSV row: source, count, level, sample, first timestamp. Pipe it to `csvkit`, open it in a spreadsheet, or load it into pandas.
+
+```bash
+logsift app.log --format csv > groups.csv
+logsift *.log --format csv | grep ERROR | sort -t, -k2 -rn
+```
+
+### Config file (`~/.logsift.toml`)
+Persist your preferred defaults so you don't need to repeat flags on every run.
+
+```toml
+# ~/.logsift.toml
+[defaults]
+threshold = 0.5
+format    = "table"
+no_ai     = false
+top       = 30
+timeout   = 60.0
+watch     = 15      # enable watch mode by default
+```
+
 ## Install
 
 ```bash
@@ -39,6 +79,15 @@ logsift app.log --no-ai
 
 # Structured JSON output (for piping to jq, etc.)
 logsift app.log --format json | jq '.[] | select(.count > 5)'
+
+# Markdown report
+logsift app.log --format markdown > report.md
+
+# CSV export
+logsift app.log --format csv > groups.csv
+
+# Watch mode (re-analyze every 30 seconds)
+logsift app.log --watch 30
 ```
 
 ## Features
@@ -60,6 +109,20 @@ export ANTHROPIC_API_KEY=sk-ant-...
 logsift app.log
 ```
 
+### Watch mode
+Re-analyze a file every N seconds. The display clears and refreshes in place — useful for monitoring a growing log during an incident.
+
+### Multi-format export
+| Flag | Output |
+|------|--------|
+| `--format table` | Rich terminal table (default) |
+| `--format json` | JSON array for `jq` / scripting |
+| `--format csv` | CSV rows for spreadsheets / pandas |
+| `--format markdown` | Markdown report for GitHub Issues / Confluence |
+
+### Config file
+Drop a `~/.logsift.toml` to set persistent defaults — no more repeating the same flags.
+
 ## Sample Output
 
 ```
@@ -78,8 +141,10 @@ The primary issue is a database connectivity failure — 28 repeated "connection
 to postgres on port 5432 suggest the database service crashed or was never started. The OOM      │
 events indicate the application or database ran out of memory, likely triggering the crash.      │
 Immediate actions: restart the postgres service, increase container memory limits, and check    │
-for runaway queries with `pg_stat_activity`.                                                    │
+for runaway queries with pg_stat_activity.                                                      │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ↻ watch mode — refreshing in 10s (Ctrl-C to stop)
 ```
 
 ## Options
@@ -91,19 +156,22 @@ for runaway queries with `pg_stat_activity`.                                    
   --level LEVEL         Filter: debug | info | warning | error | critical
   --threshold FLOAT     Grouping similarity 0–1 (default: 0.45)
   --top N               Show top N groups (default: 20)
-  --format table|json   Output format (default: table)
+  --format              table | json | csv | markdown (default: table)
   --timeout SECONDS     HTTP fetch timeout (default: 30s)
+  --watch SECS          Re-analyze every SECS seconds (watch mode)
 ```
 
 ## Architecture
 
 ```
 logsift/
-├── cli.py        # argparse entry point, asyncio.run() orchestration
+├── cli.py        # argparse entry point, asyncio.run() orchestration, watch loop
+├── config.py     # ~/.logsift.toml config loader
 ├── fetcher.py    # async file + HTTP loading with asyncio.TaskGroup
 ├── parser.py     # log line parsing: level detection, timestamp, tokenization
 ├── grouper.py    # TF-IDF vectors + cosine similarity clustering (numpy)
 ├── analyzer.py   # Anthropic streaming API integration
+├── exporter.py   # Markdown + CSV serializers
 └── display.py    # Rich tables, panels, progress bars
 ```
 
