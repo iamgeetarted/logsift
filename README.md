@@ -4,6 +4,63 @@
 
 `logsift` reads log files (local or remote), clusters similar lines using vector similarity, and streams an AI-generated diagnosis of what went wrong — all in a live Rich terminal display.
 
+## What's New in v1.3.0
+
+### 1. Regex grep filter (`--grep PATTERN`)
+
+Pre-filter log lines before grouping and AI analysis. Repeat the flag to require multiple patterns simultaneously (AND logic).
+
+```bash
+# Only analyze database-related errors
+logsift app.log --grep 'database'
+
+# Lines that mention both "timeout" AND "auth"
+logsift app.log --grep 'timeout' --grep 'auth'
+
+# Combine with --level for surgical targeting
+logsift app.log --grep 'FAILED' --level error
+```
+
+The filter runs before vectorization, so the AI analysis and group table reflect exactly the lines you care about.
+
+### 2. Output to file (`--output FILE` / `-o FILE`)
+
+Write JSON, CSV, or Markdown output directly to a file instead of stdout — no shell redirections needed.
+
+```bash
+# Save JSON report
+logsift app.log --format json -o report.json
+
+# Save Markdown for GitHub Issues
+logsift app.log --format markdown -o incident-report.md
+
+# Save CSV for pandas
+logsift app.log --format csv -o groups.csv
+```
+
+A confirmation line is printed to the terminal when the file is written.
+
+### 3. Event timeline histogram (`--timeline`)
+
+Show a time-bucketed bar chart of log volume alongside the main summary table. Each bucket is colored by severity: red if errors dominate, yellow for warnings, green for clean periods. Instantly reveals burst patterns and quiet windows.
+
+```bash
+logsift app.log --timeline
+```
+
+```
+╭──────────────────────────── Event Timeline ─────────────────────────────────╮
+│ Time Bucket          │ Count │ Distribution                │ Levels          │
+│ 2024-01-15 08:00     │    42 │ ████████████████████████    │ E:28  W:6  I:8  │
+│ 2024-01-15 09:00     │    12 │ ███████                     │ W:4   I:8       │
+│ 2024-01-15 10:00     │   187 │ ██████████████████████████  │ I:187           │
+╰─────────────────────────────────────────────────────────────────────────────╯
+```
+
+Only displayed when logs contain parseable timestamps (ISO 8601 or Apache Combined Log Format).
+
+---
+
 ## What's New in v1.2.0
 
 ### `--watch` mode — continuous re-analysis

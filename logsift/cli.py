@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from .display import (
     console,
     make_stats_panel,
     make_summary_table,
+    make_timeline_panel,
     print_ai_header,
 )
 from .exporter import to_csv, to_markdown
@@ -42,6 +44,10 @@ examples:
   logsift app.log --format csv         # CSV for spreadsheets / pandas
   logsift app.log --watch 10           # re-analyze every 10 seconds
   logsift app.log --threshold 0.6      # tighter similarity grouping
+  logsift app.log --grep 'database'    # only lines matching pattern
+  logsift app.log --grep 'ERROR' --grep 'auth'  # AND-match multiple patterns
+  logsift app.log --format json -o report.json  # write output to file
+  logsift app.log --timeline           # show time-bucketed event histogram
 
 config file (~/.logsift.toml):
   [defaults]
@@ -112,6 +118,26 @@ config file (~/.logsift.toml):
         metavar="SECS",
         help="Re-analyze every SECS seconds (watch mode; local files only)",
     )
+    p.add_argument(
+        "--grep",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="Only analyze lines matching regex PATTERN (repeatable — all must match)",
+    )
+    p.add_argument(
+        "--output",
+        "-o",
+        metavar="FILE",
+        default=None,
+        help="Write output to FILE instead of stdout (applies to json/csv/markdown formats)",
+    )
+    p.add_argument(
+        "--timeline",
+        action="store_true",
+        default=False,
+        help="Show a time-bucketed histogram of log events (requires timestamps in logs)",
+    )
     p.add_argument("--version", action="version", version=f"logsift {__version__}")
     return p
 
@@ -163,7 +189,13 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
 
     all_results: list[dict] = []
 
+    grep_res = [re.compile(p) for p in (args.grep or [])]
+
     for source_name, raw_lines in sources:
+        # Apply --grep before parsing (cheap string filter)
+        if grep_res:
+            raw_lines = [l for l in raw_lines if all(r.search(l) for r in grep_res)]
+
         lines = parse_lines(raw_lines)
         lines = _filter_level(lines, args.level)
 
@@ -204,6 +236,12 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
         console.print(make_stats_panel(lines, groups))
         console.print(make_summary_table(groups[:args.top], source_name))
 
+        if args.timeline:
+            tl = make_timeline_panel(lines)
+            if tl is not None:
+                console.print()
+                console.print(tl)
+
         if not args.no_ai:
             console.print()
             print_ai_header()
@@ -236,15 +274,24 @@ async def _run(args: argparse.Namespace) -> int:
     code, all_results = await _analyze_once(args)
 
     if args.format == "json":
-        print(json.dumps(all_results, indent=2))
+        text = json.dumps(all_results, indent=2)
+        _output(text, args.output)
     elif args.format == "csv":
-        for r in all_results:
-            print(r.get("_csv", ""), end="")
+        text = "".join(r.get("_csv", "") for r in all_results)
+        _output(text, args.output)
     elif args.format == "markdown":
-        for r in all_results:
-            print(r.get("_md", ""), end="")
+        text = "".join(r.get("_md", "") for r in all_results)
+        _output(text, args.output)
 
     return code
+
+
+def _output(text: str, path: str | None) -> None:
+    if path:
+        Path(path).write_text(text, encoding="utf-8")
+        console.print(f"[dim]Output written to {path}[/dim]", highlight=False)
+    else:
+        print(text, end="")
 
 
 def main(argv: list[str] | None = None) -> int:
