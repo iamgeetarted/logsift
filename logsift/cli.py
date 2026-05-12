@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -19,11 +20,12 @@ from .display import (
     make_summary_table,
     make_timeline_panel,
     print_ai_header,
+    print_follow_line,
 )
 from .exporter import to_csv, to_markdown
 from .fetcher import load_sources
 from .grouper import group_lines
-from .parser import Level, parse_lines
+from .parser import Level, parse_lines, parse_timestamp_dt
 
 
 def _build_parser(cfg_defaults) -> argparse.ArgumentParser:
@@ -48,6 +50,10 @@ examples:
   logsift app.log --grep 'ERROR' --grep 'auth'  # AND-match multiple patterns
   logsift app.log --format json -o report.json  # write output to file
   logsift app.log --timeline           # show time-bucketed event histogram
+  logsift app.log --since "2024-01-15 08:00"   # only lines after this time
+  logsift app.log --until "2024-01-15 09:30"   # only lines before this time
+  logsift app.log --follow             # live colorized tail (like tail -f + Rich)
+  logsift app.log --verbose            # show timing for each analysis stage
 
 config file (~/.logsift.toml):
   [defaults]
@@ -138,6 +144,31 @@ config file (~/.logsift.toml):
         default=False,
         help="Show a time-bucketed histogram of log events (requires timestamps in logs)",
     )
+    p.add_argument(
+        "--since",
+        metavar="DATETIME",
+        default=None,
+        help='Only include lines at or after this time (e.g. "2024-01-15 08:00")',
+    )
+    p.add_argument(
+        "--until",
+        metavar="DATETIME",
+        default=None,
+        help='Only include lines at or before this time (e.g. "2024-01-15 09:30")',
+    )
+    p.add_argument(
+        "--follow",
+        action="store_true",
+        default=False,
+        help="Live colorized tail — stream new lines as they are appended (like tail -f with Rich)",
+    )
+    p.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show structured timing for each analysis stage (load, parse, group, AI)",
+    )
     p.add_argument("--version", action="version", version=f"logsift {__version__}")
     return p
 
@@ -167,6 +198,73 @@ def _filter_level(lines, min_level_name: str | None):
     return [l for l in lines if level_ords.get(l.level, 99) >= min_ord]
 
 
+def _parse_dt_arg(s: str) -> datetime:
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse datetime: {s!r}  (use 'YYYY-MM-DD HH:MM')")
+
+
+def _filter_timerange(lines, since: datetime | None, until: datetime | None):
+    if since is None and until is None:
+        return lines
+    result = []
+    for line in lines:
+        if not line.timestamp:
+            result.append(line)
+            continue
+        dt = parse_timestamp_dt(line.timestamp)
+        if dt is None:
+            result.append(line)
+            continue
+        if since and dt < since:
+            continue
+        if until and dt > until:
+            continue
+        result.append(line)
+    return result
+
+
+async def _follow_file(path: Path, args: argparse.Namespace) -> int:
+    """Live colorized tail: stream new lines from a file as they are appended."""
+    if not path.exists():
+        console.print(f"[red]File not found:[/red] {path}", highlight=False)
+        return 2
+
+    grep_res = [re.compile(p) for p in (args.grep or [])]
+    min_level_name = args.level
+    min_ord = _LEVEL_ORDER.get(min_level_name, 0) if min_level_name else 0
+    level_ords = {v: _LEVEL_ORDER.get(v.value.lower(), 99) for v in Level}
+
+    console.print(
+        f"[bold cyan]logsift --follow[/bold cyan]  [dim]{path}[/dim]  "
+        f"[dim](Ctrl-C to stop)[/dim]"
+    )
+    console.rule(style="dim")
+
+    with path.open(errors="replace") as fh:
+        fh.seek(0, 2)  # seek to end
+        while True:
+            line = fh.readline()
+            if not line:
+                await asyncio.sleep(0.2)
+                continue
+            raw = line.rstrip("\n")
+            if not raw.strip():
+                continue
+            if grep_res and not all(r.search(raw) for r in grep_res):
+                continue
+            parsed_lines = parse_lines([raw])
+            if not parsed_lines:
+                continue
+            pl = parsed_lines[0]
+            if min_level_name and level_ords.get(pl.level, 99) < min_ord:
+                continue
+            print_follow_line(pl)
+
+
 async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[int, list[dict]]:
     """Run a single analysis pass. Returns (exit_code, json_results)."""
     paths = [Path(f) for f in args.files]
@@ -177,11 +275,31 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
 
     from_stdin = not sys.stdin.isatty() and not paths and not args.url
 
+    since_dt: datetime | None = None
+    until_dt: datetime | None = None
+    if getattr(args, "since", None):
+        try:
+            since_dt = _parse_dt_arg(args.since)
+        except ValueError as e:
+            console.print(f"[red]--since:[/red] {e}")
+            return 2, []
+    if getattr(args, "until", None):
+        try:
+            until_dt = _parse_dt_arg(args.until)
+        except ValueError as e:
+            console.print(f"[red]--until:[/red] {e}")
+            return 2, []
+
+    verbose = getattr(args, "verbose", False)
+
+    t_load = time.monotonic()
     try:
         sources = await load_sources(paths, args.url, from_stdin, timeout=args.timeout)
     except Exception as exc:
         console.print(f"[red]Failed to load source:[/red] {exc}")
         return 1, []
+    if verbose:
+        console.print(f"[dim]  load   {time.monotonic()-t_load:.3f}s — {len(sources)} source(s)[/dim]")
 
     if not sources:
         console.print("[yellow]No input provided. Pass a file, --url, or pipe via stdin.[/yellow]")
@@ -196,14 +314,24 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
         if grep_res:
             raw_lines = [l for l in raw_lines if all(r.search(l) for r in grep_res)]
 
+        t_parse = time.monotonic()
         lines = parse_lines(raw_lines)
+        if verbose:
+            console.print(f"[dim]  parse  {time.monotonic()-t_parse:.3f}s — {len(lines)} lines[/dim]")
+
         lines = _filter_level(lines, args.level)
+        lines = _filter_timerange(lines, since_dt, until_dt)
+        if verbose and (since_dt or until_dt):
+            console.print(f"[dim]  filter {len(lines)} lines in time window[/dim]")
 
         if not lines:
             console.print(f"[dim]{source_name}: no lines matched.[/dim]")
             continue
 
+        t_group = time.monotonic()
         groups = group_lines(lines, threshold=args.threshold)
+        if verbose:
+            console.print(f"[dim]  group  {time.monotonic()-t_group:.3f}s — {len(groups)} groups (threshold={args.threshold})[/dim]")
 
         if args.format == "json":
             for g in groups:
@@ -245,14 +373,27 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
         if not args.no_ai:
             console.print()
             print_ai_header()
+            t_ai = time.monotonic()
             for chunk in stream_analysis(groups, source_name):
                 console.print(chunk, end="")
             console.print("\n")
+            if verbose:
+                console.print(f"[dim]  ai     {time.monotonic()-t_ai:.3f}s[/dim]")
 
     return 0, all_results
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if getattr(args, "follow", False):
+        paths = [Path(f) for f in args.files]
+        if not paths:
+            console.print("[red]--follow requires a local file path.[/red]")
+            return 2
+        if len(paths) > 1:
+            console.print("[red]--follow supports exactly one file at a time.[/red]")
+            return 2
+        return await _follow_file(paths[0], args)
+
     if args.watch and args.format == "table":
         iteration = 0
         while True:

@@ -75,6 +75,29 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in tokens if len(t) > 2]
 
 
+_DT_PARSE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r'(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)'), "%Y-%m-%d %H:%M:%S"),
+    (re.compile(r'(\d{2}/\w{3}/\d{4}):(\d{2}:\d{2}:\d{2})'), "%d/%b/%Y %H:%M:%S"),
+]
+
+
+def parse_timestamp_dt(ts: str) -> "datetime | None":
+    """Try to parse a log timestamp string into a datetime object (naive UTC)."""
+    from datetime import datetime
+    for pat, fmt in _DT_PARSE_PATTERNS:
+        m = pat.search(ts)
+        if m:
+            raw = " ".join(g for g in m.groups() if g)
+            # Normalise seconds if missing
+            if raw.count(":") == 1:
+                raw += ":00"
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+    return None
+
+
 def parse_lines(raw_lines: Sequence[str]) -> list[LogLine]:
     """Parse a sequence of raw log strings into LogLine objects."""
     result: list[LogLine] = []

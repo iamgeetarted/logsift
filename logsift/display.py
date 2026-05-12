@@ -90,6 +90,16 @@ def print_ai_header() -> None:
     console.print(Panel("[bold cyan]AI Analysis[/bold cyan]", box=box.ROUNDED, style="cyan"))
 
 
+def print_follow_line(line: "LogLine") -> None:
+    """Print a single log line with level-based Rich styling (for --follow mode)."""
+    from .parser import LogLine as _LogLine  # avoid circular at module level
+    style = _LEVEL_STYLE.get(line.level, "")
+    ts_part = f"[dim]{line.timestamp}[/dim]  " if line.timestamp else ""
+    level_str = f"[{style}]{line.level.value:<8}[/{style}]" if style else f"{line.level.value:<8}"
+    text = Text.from_markup(f"{ts_part}{level_str}  ") + Text(line.message[:200])
+    console.print(text, highlight=False)
+
+
 def _dominant_level(group: Group) -> Level:
     from collections import Counter
     counts: Counter[Level] = Counter(l.level for l in group.lines)

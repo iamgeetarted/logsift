@@ -4,6 +4,62 @@
 
 `logsift` reads log files (local or remote), clusters similar lines using vector similarity, and streams an AI-generated diagnosis of what went wrong — all in a live Rich terminal display.
 
+## What's New in v1.4.0
+
+### 1. Time range filtering (`--since` / `--until`)
+
+Slice logs to an exact time window — invaluable during incident retrospectives when you only care about the blast radius hour.
+
+```bash
+# Only analyze the 08:00–09:00 window
+logsift app.log --since "2024-01-15 08:00" --until "2024-01-15 09:00"
+
+# Everything after a known event
+logsift app.log --since "2024-01-15 08:30"
+
+# Combine with --level and --grep for surgical analysis
+logsift app.log --since "2024-01-15 08:00" --level error --grep 'postgres'
+```
+
+Lines without parseable timestamps are always included. ISO 8601 (`2024-01-15T08:00`) and Apache Combined Log Format timestamps are both understood.
+
+### 2. Live colorized tail (`--follow`)
+
+`logsift --follow` streams new log lines in real-time as they are appended to a file — like `tail -f` but with Rich level-colored output. Level filters (`--level`) and grep patterns (`--grep`) apply live to the stream.
+
+```bash
+# Watch errors arrive in real-time
+logsift app.log --follow --level error
+
+# Tail and filter for auth-related lines
+logsift app.log --follow --grep 'auth'
+```
+
+```
+logsift --follow  app.log  (Ctrl-C to stop)
+──────────────────────────────────────────
+2024-01-15 08:02  INFO      Listening on :8080
+2024-01-15 08:03  ERROR     FAILED to connect to postgres://db:5432
+2024-01-15 08:03  WARNING   Retry 1/5 for worker-42
+```
+
+### 3. Structured timing observability (`--verbose`)
+
+`--verbose` prints wall-clock timing for each analysis stage — useful for benchmarking large log files and understanding where time is spent.
+
+```bash
+logsift app.log --verbose
+```
+
+```
+  load   0.012s — 1 source(s)
+  parse  0.003s — 847 lines
+  group  0.089s — 18 groups (threshold=0.45)
+  ai     1.243s
+```
+
+---
+
 ## What's New in v1.3.0
 
 ### 1. Regex grep filter (`--grep PATTERN`)
