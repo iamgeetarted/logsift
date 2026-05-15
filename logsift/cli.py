@@ -169,6 +169,32 @@ config file (~/.logsift.toml):
         default=False,
         help="Show structured timing for each analysis stage (load, parse, group, AI)",
     )
+    p.add_argument(
+        "--alert-threshold",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Fire --webhook when error+critical line count exceeds N",
+    )
+    p.add_argument(
+        "--webhook",
+        default=None,
+        metavar="URL",
+        help="Webhook URL to POST an alert payload when --alert-threshold is triggered",
+    )
+    p.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Randomly sample N lines before analysis (useful for very large log files)",
+    )
+    p.add_argument(
+        "--dedup",
+        action="store_true",
+        default=False,
+        help="Merge consecutive near-identical log lines before analysis (removes repetitive noise)",
+    )
     p.add_argument("--version", action="version", version=f"logsift {__version__}")
     return p
 
@@ -314,6 +340,21 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
         if grep_res:
             raw_lines = [l for l in raw_lines if all(r.search(l) for r in grep_res)]
 
+        sample_n = getattr(args, "sample", None)
+        if sample_n is not None and len(raw_lines) > sample_n:
+            import random
+            orig_count = len(raw_lines)
+            raw_lines = random.sample(raw_lines, sample_n)
+            if verbose:
+                console.print(f"[dim]  sample {sample_n}/{orig_count} lines[/dim]")
+
+        if getattr(args, "dedup", False):
+            from .deduplicator import dedup_lines
+            orig_count = len(raw_lines)
+            raw_lines = dedup_lines(raw_lines)
+            if verbose:
+                console.print(f"[dim]  dedup  {orig_count} → {len(raw_lines)} lines[/dim]")
+
         t_parse = time.monotonic()
         lines = parse_lines(raw_lines)
         if verbose:
@@ -332,6 +373,17 @@ async def _analyze_once(args: argparse.Namespace, iteration: int = 0) -> tuple[i
         groups = group_lines(lines, threshold=args.threshold)
         if verbose:
             console.print(f"[dim]  group  {time.monotonic()-t_group:.3f}s — {len(groups)} groups (threshold={args.threshold})[/dim]")
+
+        alert_threshold = getattr(args, "alert_threshold", None)
+        webhook_url = getattr(args, "webhook", None)
+        if alert_threshold is not None and webhook_url:
+            from .alerting import should_alert, fire_webhook
+            from .parser import Level as _Level
+            if should_alert(lines, alert_threshold):
+                fired = fire_webhook(webhook_url, source_name, lines, groups, alert_threshold)
+                err_n = sum(1 for l in lines if l.level in (_Level.ERROR, _Level.CRITICAL))
+                status = "[green]fired[/green]" if fired else "[red]failed[/red]"
+                console.print(f"[bold yellow]⚡ Alert:[/bold yellow] {err_n} errors > threshold {alert_threshold} → webhook {status}")
 
         if args.format == "json":
             for g in groups:

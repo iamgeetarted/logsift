@@ -4,6 +4,39 @@
 
 `logsift` reads log files (local or remote), clusters similar lines using vector similarity, and streams an AI-generated diagnosis of what went wrong — all in a live Rich terminal display.
 
+## What's New in v1.5.0
+
+### 1. Webhook alerting (`--alert-threshold N --webhook URL`)
+
+POST a JSON payload to a URL whenever the error+critical line count exceeds a threshold. Ideal for CI pipelines and on-call incident detection.
+
+```bash
+# Fire a Slack/PagerDuty webhook when > 10 errors
+logsift app.log --alert-threshold 10 --webhook https://hooks.slack.com/...
+```
+
+The payload includes source name, timestamp, error/warning counts, total line count, and the top error patterns.
+
+### 2. Log sampling (`--sample N`)
+
+Randomly sample N lines before analysis — lets you quickly get a representative diagnosis of massive log files without waiting for full parsing and vectorization.
+
+```bash
+# Quickly analyze 1000 lines from a 10M-line log
+logsift huge.log --sample 1000
+```
+
+### 3. Deduplication (`--dedup`)
+
+Merge consecutive near-identical lines (numbers are normalized for comparison) into a single line with a `[Nx]` count prefix. Eliminates repetitive syslog spam and retry bursts before grouping and AI analysis.
+
+```bash
+# Clean up repetitive syslog spam before grouping
+logsift syslog --dedup
+```
+
+---
+
 ## What's New in v1.4.0
 
 ### 1. Time range filtering (`--since` / `--until`)
